@@ -1,0 +1,2 @@
+# .github
+Accord Project Metadata
