@@ -1,0 +1,19 @@
+name: 'Update PR Triage Board'
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Run every day at 06:00
+  workflow_dispatch:
+
+jobs:
+  pr-triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update PR Triage Board
+        uses: accordproject/pr-triage-board-bot@main
+        with:
+          organization: 'accordproject'
+          project-number: '1'
+          gh-app-id: '12345'
+          gh-app-installation-id: '67890'
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
