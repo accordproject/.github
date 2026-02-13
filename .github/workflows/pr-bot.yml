@@ -16,4 +16,4 @@ jobs:
           project-number: '1'
           gh-app-id: '12345'
           gh-app-installation-id: '67890'
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          gh-app-private-key: ${{ secrets.PR_BOT_APP_PRIVATE_KEY }}
