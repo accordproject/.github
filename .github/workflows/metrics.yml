@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   build:
+    # Temporarily disabled
+    if: false  
     name: PR metrics
     runs-on: ubuntu-latest
     permissions:
