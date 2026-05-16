@@ -1,0 +1,149 @@
+name: Reusable stale workflow
+
+on:
+  workflow_call:
+    inputs:
+      days-before-issue-stale:
+        type: number
+        default: 60
+      days-before-pr-stale:
+        type: number
+        default: 15
+      days-before-close:
+        type: number
+        default: 10
+      enable-close:
+        description: Master kill-switch for auto-close. When false, items are only marked stale.
+        type: boolean
+        default: true
+      stale-issue-message:
+        type: string
+        default: 'This issue is stale because it has been open with no activity. Remove the stale label or comment to keep it active. Only items with maintainer engagement are auto-closed.'
+      stale-pr-message:
+        type: string
+        default: 'This PR is stale because it has been open with no activity. Remove the stale label or comment to keep it active. Only items with maintainer engagement are auto-closed.'
+      stale-label:
+        type: string
+        default: 'Stale'
+      engagement-label:
+        type: string
+        default: 'maintainer-engaged'
+      exempt-issue-labels:
+        type: string
+        default: ''
+      exempt-pr-labels:
+        type: string
+        default: ''
+      exempt-milestones:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: label items where a maintainer has engaged.
+  # Uses GitHub's built-in author_association field on comments + reviews —
+  # any of OWNER, MEMBER, COLLABORATOR counts as maintainer engagement.
+  # Needs only the default GITHUB_TOKEN; no PAT.
+  # ---------------------------------------------------------------------------
+  label-maintainer-engagement:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label items with engagement-label
+        uses: actions/github-script@v7
+        env:
+          ENGAGEMENT_LABEL: ${{ inputs.engagement-label }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const LABEL = process.env.ENGAGEMENT_LABEL;
+            const ENGAGED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: LABEL });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner, repo,
+                name: LABEL,
+                color: '0075ca',
+                description: 'A maintainer has commented or reviewed this item',
+              });
+            }
+
+            const openItems = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+
+            for (const item of openItems) {
+              const number = item.number;
+              const isPR = !!item.pull_request;
+              let hasMaintainer = false;
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: number, per_page: 100,
+              });
+              for (const c of comments) {
+                if (ENGAGED.has(c.author_association)) { hasMaintainer = true; break; }
+              }
+
+              if (!hasMaintainer && isPR) {
+                const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                  owner, repo, pull_number: number, per_page: 100,
+                });
+                for (const r of reviews) {
+                  if (ENGAGED.has(r.author_association)) { hasMaintainer = true; break; }
+                }
+              }
+
+              const hasLabel = item.labels.some(l => l.name === LABEL);
+              if (hasMaintainer && !hasLabel) {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [LABEL] });
+                core.info(`#${number}: added '${LABEL}'`);
+              } else if (!hasMaintainer && hasLabel) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: LABEL });
+                core.info(`#${number}: removed '${LABEL}'`);
+              }
+            }
+
+  # ---------------------------------------------------------------------------
+  # Job 2: actions/stale, two-step.
+  #   Step 1 — mark stale (never close).
+  #   Step 2 — close items that carry BOTH the stale label AND the engagement
+  #            label. When inputs.enable-close is false, step 2 is skipped.
+  # ---------------------------------------------------------------------------
+  stale:
+    runs-on: ubuntu-latest
+    needs: label-maintainer-engagement
+    steps:
+      - name: Mark stale issues and PRs
+        uses: actions/stale@v9
+        with:
+          stale-issue-message: ${{ inputs.stale-issue-message }}
+          stale-pr-message: ${{ inputs.stale-pr-message }}
+          stale-issue-label: ${{ inputs.stale-label }}
+          stale-pr-label: ${{ inputs.stale-label }}
+          days-before-issue-stale: ${{ inputs.days-before-issue-stale }}
+          days-before-pr-stale: ${{ inputs.days-before-pr-stale }}
+          days-before-close: -1
+          exempt-issue-labels: ${{ inputs.exempt-issue-labels }}
+          exempt-pr-labels: ${{ inputs.exempt-pr-labels }}
+          exempt-milestones: ${{ inputs.exempt-milestones }}
+
+      - name: Close stale items that have had maintainer engagement
+        if: ${{ inputs.enable-close }}
+        uses: actions/stale@v9
+        with:
+          stale-issue-message: ''
+          stale-pr-message: ''
+          stale-issue-label: ${{ inputs.stale-label }}
+          stale-pr-label: ${{ inputs.stale-label }}
+          days-before-issue-stale: -1
+          days-before-pr-stale: -1
+          days-before-close: ${{ inputs.days-before-close }}
+          only-labels: ${{ inputs.stale-label }},${{ inputs.engagement-label }}
+          exempt-milestones: ${{ inputs.exempt-milestones }}
