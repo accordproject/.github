@@ -13,7 +13,7 @@
 
 ## What we build
 
-Accord Project provides the open standard — and reference implementation — for **computable contracts**: structured, typed, executable agreements that AI agents can reliably read, write, validate, and run.
+Accord Project provides the open standard — and reference implementation — for **computable contracts**: structured, typed, executable agreements.
 
 ### The three components
 
@@ -29,10 +29,10 @@ Accord Project provides the open standard — and reference implementation — f
 Natural language request
         │
         ▼
-  ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
   │  TemplateMark│────▶│   Concerto   │────▶│    APAP      │
   │   (template) │     │   (schema)   │     │ (MCP / REST) │
-  └─────────────┘     └──────────────┘     └──────────────┘
+  └──────────────┘     └──────────────┘     └──────────────┘
         │                     │                     │
      Prose text           Type-safe data        AI tool calls
                            validation
@@ -48,7 +48,6 @@ npm install @accordproject/template-engine
 **Try it live:**
 - [Template Playground](https://playground.accordproject.org) — draft and test templates in your browser
 - [Concerto Playground](https://concerto-playground.accordproject.org) — paste a schema, see 7 language targets
-- [Agent Quickstart](https://try.accordproject.org) — end-to-end AI contract drafting demo
 
 ## For AI builders
 
