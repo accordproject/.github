@@ -133,7 +133,8 @@ jobs:
   # actions/stale measures inactivity from the item's updated_at, which every
   # bot label or project move bumps, so triage bots kept items alive forever.
   # This job instead reads each item's timeline and takes the last event by an
-  # actor that is not in ignore-actors (commits always count).
+  # actor that is not in ignore-actors (commits always count). Mentions from
+  # other issues, PRs or commits do not count.
   #
   #   - Not stale, no counted activity for days-before-*-stale → add the
   #     stale label and post the stale message.
@@ -188,9 +189,13 @@ jobs:
               ),
             };
 
-            // Timeline events generated as a side effect of another event
-            // (whose own entry already counts) or that are not activity.
-            const DERIVED = new Set(['mentioned', 'subscribed', 'unsubscribed']);
+            // Timeline events that are not activity on this item: side effects
+            // of another event (whose own entry already counts), and mentions
+            // from other issues or PRs, which survive even when the comment
+            // that made them is deleted.
+            const DERIVED = new Set([
+              'mentioned', 'subscribed', 'unsubscribed', 'cross-referenced', 'referenced',
+            ]);
 
             function eventTime(e) {
               const t = e.created_at || e.submitted_at || e.committer?.date || e.author?.date;
