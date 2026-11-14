@@ -37,6 +37,18 @@ on:
       exempt-milestones:
         type: string
         default: ''
+      ignore-actors:
+        description: >-
+          Comma-separated logins whose activity (comments, labels, reviews,
+          project moves, ...) does not count as activity. github-actions[bot]
+          is always ignored, so this workflow's own labels and comments never
+          reset the clock.
+        type: string
+        default: 'mira-accord-project[bot],accord-project-pr-triage-bot[bot]'
+      dry-run:
+        description: Log what would change without labelling, commenting or closing anything.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,22 +69,26 @@ jobs:
         uses: actions/github-script@v7
         env:
           ENGAGEMENT_LABEL: ${{ inputs.engagement-label }}
+          DRY_RUN: ${{ inputs.dry-run }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
             const LABEL = process.env.ENGAGEMENT_LABEL;
+            const DRY_RUN = process.env.DRY_RUN === 'true';
             const ENGAGED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
-            try {
-              await github.rest.issues.getLabel({ owner, repo, name: LABEL });
-            } catch {
-              await github.rest.issues.createLabel({
-                owner, repo,
-                name: LABEL,
-                color: '0075ca',
-                description: 'A maintainer has commented or reviewed this item',
-              });
+            if (!DRY_RUN) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: LABEL });
+              } catch {
+                await github.rest.issues.createLabel({
+                  owner, repo,
+                  name: LABEL,
+                  color: '0075ca',
+                  description: 'A maintainer has commented or reviewed this item',
+                });
+              }
             }
 
             const openItems = await github.paginate(github.rest.issues.listForRepo, {
@@ -101,49 +117,185 @@ jobs:
               }
 
               const hasLabel = item.labels.some(l => l.name === LABEL);
+              const prefix = DRY_RUN ? '[dry-run] ' : '';
               if (hasMaintainer && !hasLabel) {
-                await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [LABEL] });
-                core.info(`#${number}: added '${LABEL}'`);
+                if (!DRY_RUN) await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [LABEL] });
+                core.info(`${prefix}#${number}: added '${LABEL}'`);
               } else if (!hasMaintainer && hasLabel) {
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: LABEL });
-                core.info(`#${number}: removed '${LABEL}'`);
+                if (!DRY_RUN) await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: LABEL });
+                core.info(`${prefix}#${number}: removed '${LABEL}'`);
               }
             }
 
   # ---------------------------------------------------------------------------
-  # Job 2: actions/stale, two-step.
-  #   Step 1 — mark stale (never close).
-  #   Step 2 — close items that carry BOTH the stale label AND the engagement
-  #            label. When inputs.enable-close is false, step 2 is skipped.
+  # Job 2: mark stale, un-stale, and close.
+  #
+  # actions/stale measures inactivity from the item's updated_at, which every
+  # bot label or project move bumps, so triage bots kept items alive forever.
+  # This job instead reads each item's timeline and takes the last event by an
+  # actor that is not in ignore-actors (commits always count). Mentions from
+  # other issues, PRs or commits do not count.
+  #
+  #   - Not stale, no counted activity for days-before-*-stale → add the
+  #     stale label and post the stale message.
+  #   - Stale, counted activity since the label was added → remove the label.
+  #   - Stale for days-before-close, carrying the engagement label too, and
+  #     enable-close is true → close.
   # ---------------------------------------------------------------------------
   stale:
     runs-on: ubuntu-latest
     needs: label-maintainer-engagement
     steps:
-      - name: Mark stale issues and PRs
-        uses: actions/stale@v9
+      - name: Mark, un-mark and close stale issues and PRs
+        uses: actions/github-script@v7
+        env:
+          DAYS_BEFORE_ISSUE_STALE: ${{ inputs.days-before-issue-stale }}
+          DAYS_BEFORE_PR_STALE: ${{ inputs.days-before-pr-stale }}
+          DAYS_BEFORE_CLOSE: ${{ inputs.days-before-close }}
+          ENABLE_CLOSE: ${{ inputs.enable-close }}
+          STALE_ISSUE_MESSAGE: ${{ inputs.stale-issue-message }}
+          STALE_PR_MESSAGE: ${{ inputs.stale-pr-message }}
+          STALE_LABEL: ${{ inputs.stale-label }}
+          ENGAGEMENT_LABEL: ${{ inputs.engagement-label }}
+          EXEMPT_ISSUE_LABELS: ${{ inputs.exempt-issue-labels }}
+          EXEMPT_PR_LABELS: ${{ inputs.exempt-pr-labels }}
+          EXEMPT_MILESTONES: ${{ inputs.exempt-milestones }}
+          IGNORE_ACTORS: ${{ inputs.ignore-actors }}
+          DRY_RUN: ${{ inputs.dry-run }}
         with:
-          stale-issue-message: ${{ inputs.stale-issue-message }}
-          stale-pr-message: ${{ inputs.stale-pr-message }}
-          stale-issue-label: ${{ inputs.stale-label }}
-          stale-pr-label: ${{ inputs.stale-label }}
-          days-before-issue-stale: ${{ inputs.days-before-issue-stale }}
-          days-before-pr-stale: ${{ inputs.days-before-pr-stale }}
-          days-before-close: -1
-          exempt-issue-labels: ${{ inputs.exempt-issue-labels }}
-          exempt-pr-labels: ${{ inputs.exempt-pr-labels }}
-          exempt-milestones: ${{ inputs.exempt-milestones }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const env = process.env;
+            const DAY = 24 * 60 * 60 * 1000;
+            const now = Date.now();
+            const list = s => (s || '').split(',').map(x => x.trim()).filter(Boolean);
 
-      - name: Close stale items that have had maintainer engagement
-        if: ${{ inputs.enable-close }}
-        uses: actions/stale@v9
-        with:
-          stale-issue-message: ''
-          stale-pr-message: ''
-          stale-issue-label: ${{ inputs.stale-label }}
-          stale-pr-label: ${{ inputs.stale-label }}
-          days-before-issue-stale: -1
-          days-before-pr-stale: -1
-          days-before-close: ${{ inputs.days-before-close }}
-          only-labels: ${{ inputs.stale-label }},${{ inputs.engagement-label }}
-          exempt-milestones: ${{ inputs.exempt-milestones }}
+            const cfg = {
+              issueStaleDays: Number(env.DAYS_BEFORE_ISSUE_STALE),
+              prStaleDays: Number(env.DAYS_BEFORE_PR_STALE),
+              closeDays: Number(env.DAYS_BEFORE_CLOSE),
+              enableClose: env.ENABLE_CLOSE === 'true',
+              dryRun: env.DRY_RUN === 'true',
+              staleLabel: env.STALE_LABEL,
+              engagementLabel: env.ENGAGEMENT_LABEL,
+              issueMessage: env.STALE_ISSUE_MESSAGE,
+              prMessage: env.STALE_PR_MESSAGE,
+              exemptIssueLabels: list(env.EXEMPT_ISSUE_LABELS),
+              exemptPrLabels: list(env.EXEMPT_PR_LABELS),
+              exemptMilestones: list(env.EXEMPT_MILESTONES),
+              ignoreActors: new Set(
+                [...list(env.IGNORE_ACTORS), 'github-actions[bot]'].map(a => a.toLowerCase()),
+              ),
+            };
+
+            // Timeline events that are not activity on this item: side effects
+            // of another event (whose own entry already counts), and mentions
+            // from other issues or PRs, which survive even when the comment
+            // that made them is deleted.
+            const DERIVED = new Set([
+              'mentioned', 'subscribed', 'unsubscribed', 'cross-referenced', 'referenced',
+            ]);
+
+            function eventTime(e) {
+              const t = e.created_at || e.submitted_at || e.committer?.date || e.author?.date;
+              return t ? Date.parse(t) : NaN;
+            }
+
+            function eventActor(e) {
+              return (e.actor || e.user)?.login?.toLowerCase();
+            }
+
+            async function timelineFor(number) {
+              return github.paginate(github.rest.issues.listEventsForTimeline, {
+                owner, repo, issue_number: number, per_page: 100,
+              });
+            }
+
+            // Last activity by anyone not ignored. Commits carry no GitHub
+            // actor and always count.
+            function lastCountedActivity(item, timeline) {
+              let last = Date.parse(item.created_at);
+              for (const e of timeline) {
+                if (DERIVED.has(e.event)) continue;
+                const actor = eventActor(e);
+                if (actor && cfg.ignoreActors.has(actor)) continue;
+                const t = eventTime(e);
+                if (t > last) last = t;
+              }
+              return last;
+            }
+
+            function staleLabelAddedAt(timeline) {
+              let at = NaN;
+              for (const e of timeline) {
+                if (e.event === 'labeled' && e.label?.name === cfg.staleLabel) at = eventTime(e);
+              }
+              return at;
+            }
+
+            const prefix = cfg.dryRun ? '[dry-run] ' : '';
+            const iso = t => new Date(t).toISOString().slice(0, 10);
+            const counts = { marked: 0, unmarked: 0, closed: 0 };
+
+            const openItems = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+
+            for (const item of openItems) {
+              const number = item.number;
+              const isPR = !!item.pull_request;
+              const labels = item.labels.map(l => l.name);
+              const exemptLabels = isPR ? cfg.exemptPrLabels : cfg.exemptIssueLabels;
+              if (exemptLabels.some(l => labels.includes(l))) continue;
+              if (item.milestone && cfg.exemptMilestones.includes(item.milestone.title)) continue;
+
+              const staleDays = isPR ? cfg.prStaleDays : cfg.issueStaleDays;
+              const isStale = labels.includes(cfg.staleLabel);
+
+              if (!isStale) {
+                if (staleDays < 0) continue;
+                const cutoff = now - staleDays * DAY;
+                // updated_at bounds every timeline event, so a recently
+                // updated item is the only kind that needs its timeline read.
+                let last = Date.parse(item.updated_at);
+                if (last >= cutoff) last = lastCountedActivity(item, await timelineFor(number));
+                if (last >= cutoff) continue;
+
+                core.info(`${prefix}#${number}: marking stale (last counted activity ${iso(last)})`);
+                counts.marked++;
+                if (cfg.dryRun) continue;
+                const body = isPR ? cfg.prMessage : cfg.issueMessage;
+                if (body) await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+                await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [cfg.staleLabel] });
+                continue;
+              }
+
+              const timeline = await timelineFor(number);
+              const last = lastCountedActivity(item, timeline);
+              let staleAt = staleLabelAddedAt(timeline);
+              if (Number.isNaN(staleAt)) staleAt = Date.parse(item.updated_at);
+
+              if (last > staleAt) {
+                core.info(`${prefix}#${number}: removing '${cfg.staleLabel}' (activity ${iso(last)} after it was added ${iso(staleAt)})`);
+                counts.unmarked++;
+                if (!cfg.dryRun) {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name: cfg.staleLabel });
+                }
+                continue;
+              }
+
+              const closeDue = cfg.closeDays >= 0 && now - staleAt >= cfg.closeDays * DAY;
+              if (cfg.enableClose && closeDue && labels.includes(cfg.engagementLabel)) {
+                core.info(`${prefix}#${number}: closing (stale since ${iso(staleAt)})`);
+                counts.closed++;
+                if (!cfg.dryRun) {
+                  await github.rest.issues.update({
+                    owner, repo, issue_number: number, state: 'closed',
+                    ...(isPR ? {} : { state_reason: 'not_planned' }),
+                  });
+                }
+              }
+            }
+
+            core.info(`${prefix}marked ${counts.marked}, unmarked ${counts.unmarked}, closed ${counts.closed}`);
